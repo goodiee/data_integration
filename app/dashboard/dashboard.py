@@ -1,18 +1,13 @@
-import os
 import time
 import requests
 import pandas as pd
 import plotly.graph_objects as go
 from dash import Dash, dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
-import snowflake.connector
-from .config import SNOWFLAKE  # uses your dotenv-loaded settings
-import snowflake.connector
+from copy import deepcopy
+from app.core.constants import GDP_METRICS
+from app.core.snowflake_conn import have_sf_config, get_sf_conn
 
-
-# -------------------------
-# CONFIGURATION
-# -------------------------
 API_BASE = "http://localhost:8000"
 
 DATA_MIN = "2020-01-01"
@@ -21,43 +16,14 @@ DEFAULT_START = DATA_MIN
 DEFAULT_END = DATA_MAX
 
 def clamp_date(date_str: str) -> str:
-    """Clamp date to allowed range."""
     if not date_str:
         return DATA_MIN
     return max(DATA_MIN, min(date_str, DATA_MAX))
-
-# -------------------------
-# GDP gating (Snowflake-backed)
-# -------------------------
-GDP_METRICS = {"GDP_PPP_PER_CAPITA", "GDP_VS_CASES_PER100K_YEAR"}
 
 # caches (auto-refreshed)
 _ALIAS_MAP = {}                 # {"ALIAS_UPPER": "Canonical"}
 _ALLOWED_GDP_CANONICAL = set()  # {"Canonical Name", ...}
 _last_refresh = 0
-
-def _have_sf_config() -> bool:
-    required = ["account", "user", "warehouse"]
-    has_auth = bool(SNOWFLAKE.get("password")) or bool(SNOWFLAKE.get("authenticator"))
-    return all(bool(SNOWFLAKE.get(k)) for k in required) and has_auth
-
-def _sf_conn():
-    if not _have_sf_config():
-        raise RuntimeError("Snowflake config missing")
-    kwargs = dict(
-        user=SNOWFLAKE["user"],
-        account=SNOWFLAKE["account"],
-        warehouse=SNOWFLAKE["warehouse"],
-        role=SNOWFLAKE.get("role"),
-        database=SNOWFLAKE.get("database", "COVID_DB"),
-        schema=SNOWFLAKE.get("schema", "PUBLIC"),
-    )
-    if SNOWFLAKE.get("authenticator"):
-        kwargs["authenticator"] = SNOWFLAKE["authenticator"]
-    else:
-        kwargs["password"] = SNOWFLAKE["password"]
-    return snowflake.connector.connect(**kwargs)
-
 
 def _load_alias_map(conn) -> dict:
     cur = conn.cursor()
@@ -90,7 +56,12 @@ def _bootstrap_country_gates(force=False):
     global _ALIAS_MAP, _ALLOWED_GDP_CANONICAL, _last_refresh
     if not force and (time.time() - _last_refresh) < 12 * 3600:
         return
-    conn = _sf_conn()
+    if not have_sf_config():
+        _ALIAS_MAP = {}
+        _ALLOWED_GDP_CANONICAL = set()
+        _last_refresh = time.time()
+        return
+    conn = get_sf_conn()
     try:
         _ALIAS_MAP = _load_alias_map(conn)
         _ALLOWED_GDP_CANONICAL = _load_allowed_gdp_canonical(conn)
@@ -111,12 +82,7 @@ def gdp_allowed(country: str) -> bool:
     _bootstrap_country_gates()
     return to_canonical(country) in _ALLOWED_GDP_CANONICAL
 
-# Prime caches at app start
-_bootstrap_country_gates(force=True)
 
-# -------------------------
-# METRIC OPTIONS
-# -------------------------
 metric_options = [
     {"label": "🦠 Infection Rates", "value": "HEADER_INFECTION", "disabled": True},
     {"label": "New Cases", "value": "NEW_CASES"},
@@ -140,16 +106,10 @@ metric_options = [
     {"label": "GDP vs Cases per 100k (Year)", "value": "GDP_VS_CASES_PER100K_YEAR"},
 ]
 
-# -------------------------
-# DASH APP INITIALIZATION
-# -------------------------
 external_stylesheets = [dbc.themes.FLATLY]
 app = Dash(__name__, external_stylesheets=external_stylesheets)
 app.title = "COVID-19 Dashboard"
 
-# -------------------------
-# REUSABLE UI PIECES
-# -------------------------
 navbar = dbc.Navbar(
     dbc.Container([
         html.Div(
@@ -348,12 +308,9 @@ comments_card = dbc.Card(
     className="mb-5 shadow-sm border-0"
 )
 
-# Interval to clear status
 clear_status = dcc.Interval(id="clear-status", interval=3000, n_intervals=0, disabled=True)
 
-# -------------------------
-# APP LAYOUT
-# -------------------------
+
 app.layout = dbc.Container(
     [
         navbar,
@@ -362,7 +319,6 @@ app.layout = dbc.Container(
         chart_card,
         annot_card,
         comments_card,
-        # tooltips for UX niceties
         dbc.Tooltip("Type a country name (e.g., Lithuania, Germany).", target="country", placement="bottom"),
         dbc.Tooltip("Choose what to visualize. Headers are separators.", target="metric", placement="bottom"),
         dbc.Tooltip("Pick your date window.", target="date-range", placement="bottom"),
@@ -371,11 +327,8 @@ app.layout = dbc.Container(
     fluid=True
 )
 
-# -------------------------
-# DATA FETCHING
-# -------------------------
+
 def fetch_comments(country, metric):
-    """Fetch comments from API."""
     try:
         r = requests.get(f"{API_BASE}/comments/{country}/{metric}", timeout=10)
         if r.status_code != 200:
@@ -387,10 +340,7 @@ def fetch_comments(country, metric):
     except Exception as e:
         return [dbc.Alert(f"Error fetching comments: {e}", color="warning", className="mb-2")]
 
-# -------------------------
-# NEW: Gate GDP metrics based on Snowflake
-# -------------------------
-from copy import deepcopy
+
 
 @app.callback(
     Output("metric", "options"),
@@ -419,9 +369,7 @@ def gate_gdp_options(country, current_metric):
     )
     return opts, new_value, status
 
-# -------------------------
-# CALLBACK: UPDATE CHART
-# -------------------------
+
 @app.callback(
     Output("metric-chart", "figure"),
     Input("update-btn", "n_clicks"),
@@ -436,10 +384,8 @@ def update_chart(_, country, metric, start_date, end_date, theme):
     start_date = clamp_date(start_date)
     end_date = clamp_date(end_date)
 
-    # Normalize country like in EDA (optional but recommended)
     canon = to_canonical(country) or country
 
-    # Guard: block GDP metrics if country not allowed
     if metric in GDP_METRICS and not gdp_allowed(country):
         template = "plotly_dark" if (theme or "light") == "dark" else "plotly_white"
         paper_bg = "#151a1e" if template == "plotly_dark" else "white"
@@ -450,7 +396,6 @@ def update_chart(_, country, metric, start_date, end_date, theme):
         fig.update_layout(template=template, paper_bgcolor=paper_bg, plot_bgcolor=plot_bg)
         return fig
 
-    # Send canonical to API (toggle this if your API expects raw input instead)
     payload = {"country": canon, "metric": metric, "start": start_date, "end": end_date}
 
     template = "plotly_dark" if (theme or "light") == "dark" else "plotly_white"
@@ -478,7 +423,6 @@ def update_chart(_, country, metric, start_date, end_date, theme):
     df = pd.DataFrame(data)
     df["date"] = pd.to_datetime(df["date"])
 
-    # GDP vs Cases per 100k (bubble chart)
     if metric.upper() == "GDP_VS_CASES_PER100K_YEAR":
         df_pivot = df.pivot(index="date", columns="metric", values="value").reset_index()
         needed = {"GDP_PPP_PER_CAPITA", "NEW_CASES_PER_100K"}
@@ -537,7 +481,6 @@ def update_chart(_, country, metric, start_date, end_date, theme):
         )
         return fig
 
-    # GDP PPP per Capita (annual bars)
     if metric.upper() == "GDP_PPP_PER_CAPITA":
         df_year = (
             df.set_index("date")
@@ -571,7 +514,6 @@ def update_chart(_, country, metric, start_date, end_date, theme):
         )
         return fig
 
-    # Default time-series metric
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=df["date"], y=df["value"], mode="lines+markers", name="Value",
@@ -589,9 +531,7 @@ def update_chart(_, country, metric, start_date, end_date, theme):
     )
     return fig
 
-# -------------------------
-# CALLBACK: LOAD COMMENTS
-# -------------------------
+
 @app.callback(
     Output("comments-list", "children"),
     Input("country", "value"),
@@ -600,9 +540,6 @@ def update_chart(_, country, metric, start_date, end_date, theme):
 def load_comments(country, metric):
     return fetch_comments(to_canonical(country) or country, metric)
 
-# -------------------------
-# CALLBACK: ADD COMMENT
-# -------------------------
 @app.callback(
     Output("comments-list", "children", allow_duplicate=True),
     Output("status-msg", "children"),
@@ -617,7 +554,7 @@ def load_comments(country, metric):
 )
 def add_comment(_, country, metric, user, comment, end_date):
     if not (user and comment):
-        alert = dbc.Alert("❌ Please provide your name and a comment.", color="warning", className="py-2 px-3 mb-0")
+        alert = dbc.Alert("Please provide your name and a comment.", color="warning", className="py-2 px-3 mb-0")
         return fetch_comments(country, metric), alert, False
 
     canon = to_canonical(country) or country
@@ -632,18 +569,16 @@ def add_comment(_, country, metric, user, comment, end_date):
     try:
         r = requests.post(f"{API_BASE}/comments/add", json=payload, timeout=15)
         if r.status_code != 200:
-            alert = dbc.Alert(f"❌ Failed to add comment: {r.status_code} {r.text}", color="danger", className="py-2 px-3 mb-0")
+            alert = dbc.Alert(f"Failed to add comment: {r.status_code} {r.text}", color="danger", className="py-2 px-3 mb-0")
             return fetch_comments(canon, metric), alert, False
     except requests.exceptions.RequestException as e:
-        alert = dbc.Alert(f"❌ Error: {e}", color="danger", className="py-2 px-3 mb-0")
+        alert = dbc.Alert(f"Error: {e}", color="danger", className="py-2 px-3 mb-0")
         return fetch_comments(canon, metric), alert, False
 
     alert = dbc.Alert("✅ Comment added!", color="success", className="py-2 px-3 mb-0")
     return fetch_comments(canon, metric), alert, False
 
-# -------------------------
-# CALLBACK: TOGGLE COMMENTS VISIBILITY
-# -------------------------
+
 @app.callback(
     Output("comments-collapse", "is_open"),
     Output("toggle-comments", "children"),
@@ -658,9 +593,7 @@ def toggle_comments(n_clicks, is_open):
     label = "▼ Hide Comments" if new_state else "▲ Show Comments"
     return new_state, label
 
-# -------------------------
-# CALLBACK: CLEAR STATUS
-# -------------------------
+
 @app.callback(
     Output("status-msg", "children", allow_duplicate=True),
     Output("clear-status", "disabled", allow_duplicate=True),
@@ -670,8 +603,6 @@ def toggle_comments(n_clicks, is_open):
 def clear_status(_):
     return "", True
 
-# -------------------------
-# RUN APP
-# -------------------------
+
 if __name__ == "__main__":
     app.run(debug=True, port=8050)
