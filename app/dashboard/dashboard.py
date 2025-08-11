@@ -2,434 +2,236 @@ import time
 import requests
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, dcc, html, Input, Output, State
-import dash_bootstrap_components as dbc
+import streamlit as st
+from datetime import datetime
 from copy import deepcopy
+
+import sys, os
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from app.core.constants import GDP_METRICS
 from app.core.snowflake_conn import have_sf_config, get_sf_conn
+
+# -------------------------------
+# Config & constants
+# -------------------------------
+st.set_page_config(page_title="COVID-19 Dashboard", page_icon="🧭", layout="wide")
 
 API_BASE = "http://localhost:8000"
 
 DATA_MIN = "2020-01-01"
 DATA_MAX = "2023-12-31"
-DEFAULT_START = DATA_MIN
-DEFAULT_END = DATA_MAX
 
+DATA_MIN_D = datetime.strptime(DATA_MIN, "%Y-%m-%d").date()
+DATA_MAX_D = datetime.strptime(DATA_MAX, "%Y-%m-%d").date()
+
+# --- session state init ---
+if "chart_fig" not in st.session_state:
+    st.session_state.chart_fig = None
+if "chart_params" not in st.session_state:
+    st.session_state.chart_params = {}
+
+# -------------------------------
+# Styles & header
+# -------------------------------
+st.markdown(
+    """
+    <style>
+    .topbar {background:#3f87c0; color:white; padding:12px 16px; border-radius:10px;}
+    .badge {display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; margin-left:6px;}
+    .badge-success {background:#198754; color:white;}
+    .badge-secondary {background:#6c757d; color:white;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="topbar"><span>🧭</span> <strong>COVID-19 Interactive Dashboard</strong></div>',
+    unsafe_allow_html=True
+)
+
+# -------------------------------
+# Helpers
+# -------------------------------
 def clamp_date(date_str: str) -> str:
     if not date_str:
         return DATA_MIN
     return max(DATA_MIN, min(date_str, DATA_MAX))
 
-# caches (auto-refreshed)
-_ALIAS_MAP = {}                 # {"ALIAS_UPPER": "Canonical"}
-_ALLOWED_GDP_CANONICAL = set()  # {"Canonical Name", ...}
-_last_refresh = 0
-
-def _load_alias_map(conn) -> dict:
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT UPPER(alias) AS alias_u, canonical
-            FROM COVID_DB.PUBLIC.COUNTRY_ALIAS
-            WHERE alias IS NOT NULL AND canonical IS NOT NULL
-        """)
-        return {alias_u: canonical for alias_u, canonical in cur.fetchall()}
-    finally:
-        cur.close()
-
-def _load_allowed_gdp_canonical(conn) -> set:
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT DISTINCT
-                   COALESCE(a.canonical, g.country) AS country_norm
-            FROM COVID_DB.PUBLIC.GDP_PPP_LONG g
-            LEFT JOIN COVID_DB.PUBLIC.COUNTRY_ALIAS a
-              ON UPPER(a.alias) = UPPER(g.country)
-            WHERE g.country IS NOT NULL
-        """)
-        return {r[0] for r in cur.fetchall() if r[0]}
-    finally:
-        cur.close()
-
-def _bootstrap_country_gates(force=False):
-    global _ALIAS_MAP, _ALLOWED_GDP_CANONICAL, _last_refresh
-    if not force and (time.time() - _last_refresh) < 12 * 3600:
-        return
+@st.cache_data(ttl=12*60*60, show_spinner=False)
+def _load_alias_map_cached() -> dict:
     if not have_sf_config():
-        _ALIAS_MAP = {}
-        _ALLOWED_GDP_CANONICAL = set()
-        _last_refresh = time.time()
-        return
+        return {}
     conn = get_sf_conn()
     try:
-        _ALIAS_MAP = _load_alias_map(conn)
-        _ALLOWED_GDP_CANONICAL = _load_allowed_gdp_canonical(conn)
-        _last_refresh = time.time()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT UPPER(alias) AS alias_u, canonical
+                FROM COVID_DB.PUBLIC.COUNTRY_ALIAS
+                WHERE alias IS NOT NULL AND canonical IS NOT NULL
+                """
+            )
+            rows = cur.fetchall()
+            return {alias_u: canonical for alias_u, canonical in rows}
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+@st.cache_data(ttl=12*60*60, show_spinner=False)
+def _load_allowed_gdp_canonical_cached() -> set:
+    if not have_sf_config():
+        return set()
+    conn = get_sf_conn()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT DISTINCT
+                       COALESCE(a.canonical, g.country) AS country_norm
+                FROM COVID_DB.PUBLIC.GDP_PPP_LONG g
+                LEFT JOIN COVID_DB.PUBLIC.COUNTRY_ALIAS a
+                  ON UPPER(a.alias) = UPPER(g.country)
+                WHERE g.country IS NOT NULL
+                """
+            )
+            return {r[0] for r in cur.fetchall() if r[0]}
+        finally:
+            cur.close()
     finally:
         conn.close()
 
 def to_canonical(country: str) -> str:
-    """Normalize a free-typed country to canonical using COUNTRY_ALIAS; fallback to input."""
     if not country:
         return ""
     c = country.strip()
-    canon = _ALIAS_MAP.get(c.upper())
+    alias_map = _load_alias_map_cached()
+    canon = alias_map.get(c.upper())
     return canon if canon else c
 
 def gdp_allowed(country: str) -> bool:
-    """Return True if country (after alias normalization) is present in GDP table."""
-    _bootstrap_country_gates()
-    return to_canonical(country) in _ALLOWED_GDP_CANONICAL
+    allowed_set = _load_allowed_gdp_canonical_cached()
+    return to_canonical(country) in allowed_set
 
-
-metric_options = [
-    {"label": "🦠 Infection Rates", "value": "HEADER_INFECTION", "disabled": True},
-    {"label": "New Cases", "value": "NEW_CASES"},
-    {"label": "New Cases per 100k", "value": "NEW_CASES_PER_100K"},
-
-    {"label": "💀 Mortality Rates", "value": "HEADER_MORTALITY", "disabled": True},
-    {"label": "New Deaths", "value": "NEW_DEATHS"},
-    {"label": "New Deaths per 100k", "value": "NEW_DEATHS_PER_100K"},
-
-    {"label": "💉 Vaccination Rates", "value": "HEADER_VAX", "disabled": True},
-    {"label": "Total Vaccinations", "value": "TOTAL_VACCINATIONS"},
-    {"label": "Daily Vaccinations", "value": "DAILY_VACCINATIONS"},
-    {"label": "People Vaccinated", "value": "PEOPLE_VACCINATED"},
-    {"label": "People Fully Vaccinated", "value": "PEOPLE_FULLY_VACCINATED"},
-    {"label": "Total Vaccinations per 100", "value": "TOTAL_VACCINATIONS_PER_HUNDRED"},
-    {"label": "People Vaccinated per 100", "value": "PEOPLE_VACCINATED_PER_HUNDRED"},
-    {"label": "People Fully Vaccinated per 100", "value": "PEOPLE_FULLY_VACCINATED_PER_HUNDRED"},
-
-    {"label": "💵 GDP Metrics", "value": "HEADER_GDP", "disabled": True},
-    {"label": "GDP PPP per Capita", "value": "GDP_PPP_PER_CAPITA"},
-    {"label": "GDP vs Cases per 100k (Year)", "value": "GDP_VS_CASES_PER100K_YEAR"},
+_base_metric_options = [
+    ("New Cases", "NEW_CASES"),
+    ("New Cases per 100k", "NEW_CASES_PER_100K"),
+    ("New Deaths", "NEW_DEATHS"),
+    ("New Deaths per 100k", "NEW_DEATHS_PER_100K"),
+    ("Total Vaccinations", "TOTAL_VACCINATIONS"),
+    ("Daily Vaccinations", "DAILY_VACCINATIONS"),
+    ("People Vaccinated", "PEOPLE_VACCINATED"),
+    ("People Fully Vaccinated", "PEOPLE_FULLY_VACCINATED"),
+    ("Total Vaccinations per 100", "TOTAL_VACCINATIONS_PER_HUNDRED"),
+    ("People Vaccinated per 100", "PEOPLE_VACCINATED_PER_HUNDRED"),
+    ("People Fully Vaccinated per 100", "PEOPLE_FULLY_VACCINATED_PER_HUNDRED"),
+    ("GDP PPP per Capita", "GDP_PPP_PER_CAPITA"),
+    ("GDP vs Cases per 100k (Year)", "GDP_VS_CASES_PER100K_YEAR"),
 ]
 
-external_stylesheets = [dbc.themes.FLATLY]
-app = Dash(__name__, external_stylesheets=external_stylesheets)
-app.title = "COVID-19 Dashboard"
+def build_metric_choices(allow_gdp: bool):
+    choices = []
+    for label, value in _base_metric_options:
+        if value in GDP_METRICS and not allow_gdp:
+            continue
+        choices.append((label, value))
+    return choices
 
-navbar = dbc.Navbar(
-    dbc.Container([
-        html.Div(
-            [
-                html.Span("🧭", className="me-2 text-white"),  
-                dbc.NavbarBrand(
-                    "COVID-19 Interactive Dashboard",
-                    className="fw-semibold text-white"
-                ),
-            ],
-            className="d-flex align-items-center"
-        ),
-        dbc.NavbarToggler(id="navbar-toggler", className="text-white"),
-        dbc.Collapse(
-            dbc.Nav(
-                [
-                    dbc.Label(
-                        "Chart theme",
-                        className="me-2 mb-0 text-white", 
-                        html_for="theme"
-                    ),
-                    dcc.Dropdown(
-                        id="theme",
-                        options=[
-                            {"label": "Light", "value": "light"},
-                            {"label": "Dark", "value": "dark"}
-                        ],
-                        value="light",
-                        clearable=False,
-                        style={
-                            "width": 120,
-                            "backgroundColor": "white",
-                            "color": "black"
-                        },
-                    ),
-                ],
-                className="ms-auto",
-                navbar=True
-            ),
-            id="navbar-collapse",
-            navbar=True,
-            is_open=True,
-        ),
-    ]),
-    color=None,  
-    dark=True,
-    style={"backgroundColor": "#3f87c0"}, 
-    className="mb-4 shadow-sm"
-)
+# -------------------------------
+# Filters (LIVE / reactive)
+# -------------------------------
+st.write("### Filters")
 
-filters_card = dbc.Card(
-    dbc.CardBody(
-        [
-            
-            dbc.Row([dbc.Col(html.Div(id="gdp-status"), width="auto", className="mb-2")]),
+g1, g2, g3, g4 = st.columns([1.3, 1.5, 2, 0.8])
 
-          
-            dbc.Row(
-                [
-                    dbc.Col(
-                        [
-                            dbc.Label("Country"),
-                            dcc.Input(
-                                id="country",
-                                type="text",
-                                value="Lithuania",
-                                placeholder="Type a country...",
-                                className="form-control"
-                            ),
-                        ],
-                        md=3
-                    ),
-                    dbc.Col(
-                        [
-                            dbc.Label("Metric"),
-                            dcc.Dropdown(
-                                id="metric",
-                                options=metric_options,
-                                value="NEW_CASES_PER_100K",
-                                clearable=False,
-                            ),
-                        ],
-                        md=4
-                    ),
-                    dbc.Col(
-                        [
-                            dbc.Label("Date range"),
-                            dcc.DatePickerRange(
-                                id="date-range",
-                                start_date=DEFAULT_START,
-                                end_date=DEFAULT_END,
-                                min_date_allowed=DATA_MIN,
-                                max_date_allowed=DATA_MAX,
-                                display_format="YYYY-MM-DD",
-                                className="w-100"
-                            ),
-                        ],
-                        md=4
-                    ),
-                    dbc.Col(
-                        [
-                            dbc.Label(" "), 
-                            dbc.Button(
-                                "Update chart",
-                                id="update-btn",
-                                style={
-                                    "backgroundColor": "#3f87c0",
-                                    "borderColor": "#3f87c0",
-                                    "color": "white",
-                                    "whiteSpace": "nowrap",
-                                    "height": "38px",
-                                    "padding": "0 16px",
-                                    "borderRadius": "8px"
-                                },
-                                className="w-100"
-                            ),
-                        ],
-                        width="auto",  
-                        className="align-self-end"  
-                    ),
-                ],
-                className="g-3 align-items-end"
-            ),
-        ]
-    ),
-    className="mb-3 shadow-sm border-0"
-)
-
-
-chart_card = dbc.Card(
-    [
-        dbc.CardHeader(
-            dbc.Row(
-                [
-                    dbc.Col(html.H5("Metric Visualization", className="mb-0"), xs=8),
-                    dbc.Col(dbc.Badge("Interactive", color="info", className="float-end"), xs=4),
-                ],
-                align="center",
-                className="g-0"
-            )
-        ),
-        dbc.CardBody(
-            dcc.Loading(
-                id="loading-graph",
-                type="circle",
-                children=dcc.Graph(id="metric-chart", config={"displayModeBar": True}),
-            )
-        ),
-    ],
-    className="mb-4 shadow-sm border-0"
-)
-
-annot_card = dbc.Card(
-    dbc.CardBody(
-        [
-            html.H5("Add annotation", className="mb-3"),
-            dbc.Row(
-                [
-                    dbc.Col(dcc.Input(id="user", type="text", placeholder="Your name", className="form-control"), md=3),
-                    dbc.Col(dcc.Input(id="comment", type="text", placeholder="Comment", className="form-control"), md=7),
-                    dbc.Col(dbc.Button("Submit", id="submit-comment", color="success", className="w-100"), md=2),
-                ],
-                className="g-2"
-            ),
-            html.Div(id="status-msg", className="mt-3"),
-        ]
-    ),
-    className="mb-3 shadow-sm border-0"
-)
-
-comments_card = dbc.Card(
-    [
-        dbc.CardHeader(
-            dbc.Button(
-                "▼ Hide Comments",
-                id="toggle-comments",
-                color="light",
-                className="w-100 text-start"
-            )
-        ),
-        dbc.Collapse(
-            dbc.CardBody(
-                [
-                    html.H6("Previous comments", className="mb-2"),
-                    html.Div(
-                        id="comments-list",
-                        style={"border": "1px solid #e9ecef", "padding": "8px", "maxHeight": "220px", "overflowY": "auto"},
-                        className="rounded"
-                    ),
-                ]
-            ),
-            id="comments-collapse",
-            is_open=True
-        ),
-    ],
-    className="mb-5 shadow-sm border-0"
-)
-
-clear_status = dcc.Interval(id="clear-status", interval=3000, n_intervals=0, disabled=True)
-
-
-app.layout = dbc.Container(
-    [
-        navbar,
-        filters_card,
-        clear_status,
-        chart_card,
-        annot_card,
-        comments_card,
-        dbc.Tooltip("Type a country name (e.g., Lithuania, Germany).", target="country", placement="bottom"),
-        dbc.Tooltip("Choose what to visualize. Headers are separators.", target="metric", placement="bottom"),
-        dbc.Tooltip("Pick your date window.", target="date-range", placement="bottom"),
-        dbc.Tooltip("Render chart with current filters.", target="update-btn", placement="bottom"),
-    ],
-    fluid=True
-)
-
-
-def fetch_comments(country, metric):
-    try:
-        r = requests.get(f"{API_BASE}/comments/{country}/{metric}", timeout=10)
-        if r.status_code != 200:
-            return [dbc.Alert(f"Error loading comments: {r.text}", color="danger", className="mb-2")]
-        comments = r.json().get("comments", [])
-        if not comments:
-            return [html.Div("No comments yet.")]
-        return [html.Div(f"{c['timestamp'][:10]} — {c['user']}: {c['text']}") for c in comments]
-    except Exception as e:
-        return [dbc.Alert(f"Error fetching comments: {e}", color="warning", className="mb-2")]
-
-
-
-@app.callback(
-    Output("metric", "options"),
-    Output("metric", "value"),
-    Output("gdp-status", "children"),
-    Input("country", "value"),
-    State("metric", "value")
-)
-def gate_gdp_options(country, current_metric):
-    allowed = gdp_allowed(country)
-    opts = deepcopy(metric_options)
-
-    for opt in opts:
-        val = opt.get("value")
-        if val in GDP_METRICS:
-            opt["disabled"] = opt.get("disabled", False) or (not allowed)
-
-    new_value = current_metric
-    if (current_metric in GDP_METRICS) and (not allowed):
-        new_value = "NEW_CASES_PER_100K"  # safe default
-
-    status = (
-        dbc.Badge("GDP metrics available", color="success", className="me-2")
-        if allowed else
-        dbc.Badge("GDP metrics unavailable for this country", color="secondary", className="me-2")
+with g1:
+    country = st.text_input(
+        "Country",
+        value=st.session_state.get("country", "Lithuania"),
+        key="country",
+        help="Type a country name (e.g., Lithuania, Germany)."
     )
-    return opts, new_value, status
 
+allowed = gdp_allowed(country)
+if allowed:
+    st.markdown('<span class="badge badge-success">GDP metrics available</span>', unsafe_allow_html=True)
+else:
+    st.markdown('<span class="badge badge-secondary">GDP metrics unavailable for this country</span>', unsafe_allow_html=True)
 
-@app.callback(
-    Output("metric-chart", "figure"),
-    Input("update-btn", "n_clicks"),
-    State("country", "value"),
-    State("metric", "value"),
-    State("date-range", "start_date"),
-    State("date-range", "end_date"),
-    State("theme", "value"),
-    prevent_initial_call=True
-)
-def update_chart(_, country, metric, start_date, end_date, theme):
-    start_date = clamp_date(start_date)
-    end_date = clamp_date(end_date)
+with g2:
+    metric_choices = build_metric_choices(allowed)
+    metric_labels = [l for l, _ in metric_choices]
+    metric_values = {l: v for l, v in metric_choices}
+    default_label = "New Cases per 100k"
 
+    sel_label = st.selectbox(
+        "Metric",
+        options=metric_labels,
+        index=metric_labels.index(default_label) if default_label in metric_labels else 0,
+        key="metric_label",
+        help="Choose what to visualize."
+    )
+    metric = metric_values[sel_label]
+    st.session_state["metric_value"] = metric
+
+with g3:
+    dr = st.date_input(
+        "Date range",
+        key="date_range",
+        value=st.session_state.get("date_range", (DATA_MIN_D, DATA_MAX_D)),
+        min_value=DATA_MIN_D,
+        max_value=DATA_MAX_D,
+        help="Pick your date window."
+    )
+    if isinstance(dr, tuple):
+        start_d, end_d = dr
+    else:
+        start_d = end_d = dr
+
+with g4:
+    update_clicked = st.button("Update chart")
+
+# -------------------------------
+# Chart
+# -------------------------------
+def build_empty_fig(msg: str) -> go.Figure:
+    fig = go.Figure().add_annotation(text=msg, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+    return fig
+
+def render_chart(country: str, metric: str, start_date: str, end_date: str):
     canon = to_canonical(country) or country
 
     if metric in GDP_METRICS and not gdp_allowed(country):
-        template = "plotly_dark" if (theme or "light") == "dark" else "plotly_white"
-        paper_bg = "#151a1e" if template == "plotly_dark" else "white"
-        plot_bg = "#151a1e" if template == "plotly_dark" else "white"
-        fig = go.Figure().add_annotation(
-            text=f"GDP metrics are not available for '{canon}'. Choose a different metric or country."
-        )
-        fig.update_layout(template=template, paper_bgcolor=paper_bg, plot_bgcolor=plot_bg)
-        return fig
+        return build_empty_fig(f"GDP metrics are not available for '{canon}'. Choose a different metric or country.")
 
     payload = {"country": canon, "metric": metric, "start": start_date, "end": end_date}
-
-    template = "plotly_dark" if (theme or "light") == "dark" else "plotly_white"
-    paper_bg = "#151a1e" if template == "plotly_dark" else "white"
-    plot_bg = "#151a1e" if template == "plotly_dark" else "white"
 
     try:
         resp = requests.post(f"{API_BASE}/metrics", json=payload, timeout=20)
     except requests.exceptions.RequestException as e:
-        fig = go.Figure().add_annotation(text=f"Error connecting to API: {e}")
-        fig.update_layout(template=template, paper_bgcolor=paper_bg, plot_bgcolor=plot_bg)
-        return fig
+        return build_empty_fig(f"Error connecting to API: {e}")
 
     if resp.status_code != 200:
-        fig = go.Figure().add_annotation(text=f"API returned {resp.status_code}: {resp.text}")
-        fig.update_layout(template=template, paper_bgcolor=paper_bg, plot_bgcolor=plot_bg)
-        return fig
+        return build_empty_fig(f"API returned {resp.status_code}: {resp.text}")
 
     data = resp.json().get("data", [])
     if not data:
-        fig = go.Figure().add_annotation(text="No data available")
-        fig.update_layout(template=template, paper_bgcolor=paper_bg, plot_bgcolor=plot_bg)
-        return fig
+        return build_empty_fig("No data available")
 
     df = pd.DataFrame(data)
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
 
     if metric.upper() == "GDP_VS_CASES_PER100K_YEAR":
         df_pivot = df.pivot(index="date", columns="metric", values="value").reset_index()
         needed = {"GDP_PPP_PER_CAPITA", "NEW_CASES_PER_100K"}
         if not needed.issubset(df_pivot.columns):
-            fig = go.Figure().add_annotation(text="Required columns not returned by API.")
-            fig.update_layout(template=template, paper_bgcolor=paper_bg, plot_bgcolor=plot_bg)
-            return fig
+            return build_empty_fig("Required columns not returned by API.")
 
         df_pivot["year"] = df_pivot["date"].dt.year
         df_pivot = df_pivot.dropna(subset=["GDP_PPP_PER_CAPITA", "NEW_CASES_PER_100K"])
@@ -437,9 +239,7 @@ def update_chart(_, country, metric, start_date, end_date, theme):
         df_pivot = df_pivot[df_pivot["NEW_CASES_PER_100K"] >= 0]
 
         if df_pivot.empty:
-            fig = go.Figure().add_annotation(text="No valid GDP/cases rows to plot.")
-            fig.update_layout(template=template, paper_bgcolor=paper_bg, plot_bgcolor=plot_bg)
-            return fig
+            return build_empty_fig("No valid GDP/cases rows to plot.")
 
         max_cases = df_pivot["NEW_CASES_PER_100K"].max()
         df_pivot["bubble_size"] = (df_pivot["NEW_CASES_PER_100K"] / max_cases) * 40 + 6
@@ -453,10 +253,9 @@ def update_chart(_, country, metric, start_date, end_date, theme):
                 color=df_pivot["year"],
                 colorscale="Viridis",
                 showscale=True,
-                colorbar=dict(title=dict(text="Year", side="top"),
-                              tickvals=[2020, 2021, 2022, 2023]),
+                colorbar=dict(title=dict(text="Year", side="top"), tickvals=[2020, 2021, 2022, 2023]),
                 line=dict(width=0.5, color="DarkSlateGrey"),
-                opacity=0.8
+                opacity=0.8,
             ),
             hovertemplate=(
                 "GDP PPP per Capita: %{x:,.0f}<br>"
@@ -465,7 +264,7 @@ def update_chart(_, country, metric, start_date, end_date, theme):
                 "Date: %{text}<extra></extra>"
             ),
             text=df_pivot["date"].dt.strftime("%Y-%m-%d"),
-            name="GDP vs Cases per 100k"
+            name="GDP vs Cases per 100k",
         ))
 
         fig.update_layout(
@@ -474,135 +273,138 @@ def update_chart(_, country, metric, start_date, end_date, theme):
             yaxis_title="New Cases per 100k",
             xaxis=dict(tickformat=","),
             legend=dict(orientation="h", y=1.12),
-            template=template,
-            paper_bgcolor=paper_bg,
-            plot_bgcolor=plot_bg,
-            margin=dict(l=40, r=30, t=60, b=40)
+            margin=dict(l=40, r=30, t=60, b=40),
         )
         return fig
 
     if metric.upper() == "GDP_PPP_PER_CAPITA":
-        df_year = (
-            df.set_index("date")
-              .resample("YE")["value"]
-              .last()
-              .reset_index()
-        )
+        df_year = df.set_index("date").resample("YE")["value"].last().reset_index()
         if df_year.empty:
-            fig = go.Figure().add_annotation(text="No GDP data to plot.")
-            fig.update_layout(template=template, paper_bgcolor=paper_bg, plot_bgcolor=plot_bg)
-            return fig
-
+            return build_empty_fig("No GDP data to plot.")
         df_year["year"] = df_year["date"].dt.year
         fig = go.Figure(go.Bar(
             x=df_year["year"],
             y=df_year["value"],
             name="GDP PPP per Capita",
-            hovertemplate="Year: %{x}<br>GDP PPP per Capita: %{y:,.0f}<extra></extra>"
+            hovertemplate="Year: %{x}<br>GDP PPP per Capita: %{y:,.0f}<extra></extra>",
         ))
-
         fig.update_layout(
             title=f"GDP PPP per Capita in {canon} ({start_date} → {end_date})",
             xaxis_title="Year",
             yaxis_title="USD",
             xaxis=dict(type="category"),
             bargap=0.2,
-            template=template,
-            paper_bgcolor=paper_bg,
-            plot_bgcolor=plot_bg,
-            margin=dict(l=40, r=30, t=60, b=40)
+            margin=dict(l=40, r=30, t=60, b=40),
         )
         return fig
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["value"], mode="lines+markers", name="Value",
-        hovertemplate="Date: %{x|%Y-%m-%d}<br>Value: %{y:.2f}<extra></extra>"
-    ))
-
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["value"],
+            mode="lines+markers",
+            name="Value",
+            hovertemplate="Date: %{x|%Y-%m-%d}<br>Value: %{y:.2f}<extra></extra>",
+        )
+    )
     fig.update_layout(
         title=f"{metric} in {canon} ({start_date} → {end_date})",
         xaxis_title="Date",
         yaxis_title="Value",
-        template=template,
-        paper_bgcolor=paper_bg,
-        plot_bgcolor=plot_bg,
-        margin=dict(l=40, r=30, t=60, b=40)
+        margin=dict(l=40, r=30, t=60, b=40),
     )
     return fig
 
+if update_clicked:
+    start_str = clamp_date(start_d.strftime("%Y-%m-%d"))
+    end_str = clamp_date(end_d.strftime("%Y-%m-%d"))
+    with st.spinner("Rendering chart…"):
+        fig = render_chart(country, metric, start_str, end_str)
+    st.session_state.chart_fig = fig
+    st.session_state.chart_params = {"country": country, "metric": metric, "start": start_str, "end": end_str}
 
-@app.callback(
-    Output("comments-list", "children"),
-    Input("country", "value"),
-    Input("metric", "value")
-)
-def load_comments(country, metric):
-    return fetch_comments(to_canonical(country) or country, metric)
+if st.session_state.chart_fig is not None:
+    st.plotly_chart(st.session_state.chart_fig, use_container_width=True, theme=None)
+else:
+    st.info("Adjust filters and click **Update chart** to render.")
 
-@app.callback(
-    Output("comments-list", "children", allow_duplicate=True),
-    Output("status-msg", "children"),
-    Output("clear-status", "disabled"),
-    Input("submit-comment", "n_clicks"),
-    State("country", "value"),
-    State("metric", "value"),
-    State("user", "value"),
-    State("comment", "value"),
-    State("date-range", "end_date"),
-    prevent_initial_call=True
-)
-def add_comment(_, country, metric, user, comment, end_date):
-    if not (user and comment):
-        alert = dbc.Alert("Please provide your name and a comment.", color="warning", className="py-2 px-3 mb-0")
-        return fetch_comments(country, metric), alert, False
+# -------------------------------
+# Comments
+# -------------------------------
 
-    canon = to_canonical(country) or country
-    payload = {
-        "country": canon,
-        "date": clamp_date(end_date),
-        "metric": metric,
-        "user": user,
-        "comment": comment,
-        "value": None
-    }
+if "comment_seed" not in st.session_state:
+    st.session_state.comment_seed = 0
+
+st.markdown("### Add annotation")
+
+def fetch_comments(country: str, metric: str):
     try:
-        r = requests.post(f"{API_BASE}/comments/add", json=payload, timeout=15)
+        r = requests.get(f"{API_BASE}/comments/{country}/{metric}", timeout=10)
         if r.status_code != 200:
-            alert = dbc.Alert(f"Failed to add comment: {r.status_code} {r.text}", color="danger", className="py-2 px-3 mb-0")
-            return fetch_comments(canon, metric), alert, False
-    except requests.exceptions.RequestException as e:
-        alert = dbc.Alert(f"Error: {e}", color="danger", className="py-2 px-3 mb-0")
-        return fetch_comments(canon, metric), alert, False
+            return False, [f"Error loading comments: {r.text}"]
+        comments = r.json().get("comments", [])
+        if not comments:
+            return True, ["No comments yet."]
+        return True, [f"{c['timestamp'][:10]} — {c['user']}: {c['text']}" for c in comments]
+    except Exception as e:
+        return False, [f"Error fetching comments: {e}"]
 
-    alert = dbc.Alert("✅ Comment added!", color="success", className="py-2 px-3 mb-0")
-    return fetch_comments(canon, metric), alert, False
+seed = st.session_state.comment_seed
+user_key = f"comment_user_{seed}"
+text_key = f"comment_text_{seed}"
+btn_key  = f"comment_submit_{seed}"
 
+box = st.container(border=True)
+with box:
+    c1, c2, c3 = st.columns([1, 3, 0.6])
+    with c1:
+        st.text_input("Your name", key=user_key)
+    with c2:
+        st.text_input("Comment", key=text_key)
+    with c3:
+        submit = st.button("Submit", key=btn_key)
 
-@app.callback(
-    Output("comments-collapse", "is_open"),
-    Output("toggle-comments", "children"),
-    Input("toggle-comments", "n_clicks"),
-    State("comments-collapse", "is_open"),
-    prevent_initial_call=False
-)
-def toggle_comments(n_clicks, is_open):
-    if not n_clicks:
-        return True, "▼ Hide Comments"
-    new_state = not is_open
-    label = "▼ Hide Comments" if new_state else "▲ Show Comments"
-    return new_state, label
+if submit:
+    name = st.session_state.get(user_key, "").strip()
+    text = st.session_state.get(text_key, "").strip()
+    if not (name and text):
+        st.warning("Please provide your name and a comment.")
+    else:
+        canon = to_canonical(st.session_state.get("country") or "") or (st.session_state.get("country") or "")
+        end_str = clamp_date(
+            (st.session_state.chart_params.get("end", DATA_MAX))
+            if st.session_state.get("chart_params") else DATA_MAX
+        )
+        payload = {
+            "country": canon,
+            "date": end_str,
+            "metric": st.session_state.get("metric_value"),
+            "user": name,
+            "comment": text,
+            "value": None,
+        }
+        try:
+            r = requests.post(f"{API_BASE}/comments/add", json=payload, timeout=15)
+            if r.status_code != 200:
+                st.error(f"Failed to add comment: {r.status_code} {r.text}")
+            else:
+                st.toast("Comment added!", icon="✅")
+                st.session_state.comment_seed += 1
+                st.rerun()
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error: {e}")
 
+canon = to_canonical(st.session_state.get("country") or "") or (st.session_state.get("country") or "")
+metric_for_list = st.session_state.get("metric_value")
+ok, items = fetch_comments(canon, metric_for_list)
+with st.expander("Comments", expanded=True):
+    if ok:
+        for line in items:
+            st.write(line)
+    else:
+        for line in items:
+            st.warning(line)
 
-@app.callback(
-    Output("status-msg", "children", allow_duplicate=True),
-    Output("clear-status", "disabled", allow_duplicate=True),
-    Input("clear-status", "n_intervals"),
-    prevent_initial_call=True
-)
-def clear_status(_):
-    return "", True
-
-
-if __name__ == "__main__":
-    app.run(debug=True, port=8050)
+st.write("")
+st.write("")
