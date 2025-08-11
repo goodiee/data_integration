@@ -724,141 +724,108 @@ with tabs[index_shift + 1]:
     cl_metric_label = st.selectbox("Metric for clustering", _non_gdp_metric_labels(), key="cl_metric_label")
     cl_metric = dict(_base_metric_options)[cl_metric_label]
 
-    c_top1, c_top2 = st.columns([1, 1])
-    with c_top1:
-        st.caption("Clustering uses exactly the countries selected above.")
-    with c_top2:
-        st.caption("Country list is loaded from MART_COUNTRY_DAY (canonicalized).")
-
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         window_days = st.number_input("Look-back window (days)", min_value=30, max_value=400, value=180, step=10)
     with c2:
         n_clusters = st.number_input("Clusters (k)", min_value=2, max_value=10, value=4, step=1)
     with c3:
-        normalize_switch = st.checkbox("Standardize features", value=True, help="Recommended for fair clustering.")
+        normalize_switch = st.checkbox("Standardize features", value=True)
 
-    run_clusters = st.button("Run clustering")
+    # define the button INSIDE the tab and give it a key
+    run_clusters = st.button("Run clustering", key="run_clusters_btn")
 
-if run_clusters:
-    countries_for_cluster = country_selection
-
-    if not countries_for_cluster:
-        st.warning("No countries selected. Pick at least one in the Filters section.")
-    elif not _SK_AVAILABLE:
-        st.warning("Install scikit-learn to enable clustering: `pip install scikit-learn`")
-    else:
-        # Cap clustering window to what actually exists in MART_COUNTRY_DAY
-        db_min, db_max = _mart_global_date_span()
-        end_c_dt = min(pd.to_datetime(end_str), db_max)
-        start_c_dt = max(pd.to_datetime(DATA_MIN), end_c_dt - pd.Timedelta(days=int(window_days)))
-        start_c = clamp_date(start_c_dt.strftime("%Y-%m-%d"))
-        end_c   = clamp_date(end_c_dt.strftime("%Y-%m-%d"))
-
-        # --- Scan countries & collect diagnostics
-        diag_rows = []
-        usable_rows, usable_names = [], []
-        for ctry in countries_for_cluster[:80]:  # guard
-            s = _fetch_series(ctry, cl_metric, start_c, end_c)
-            d = _series_diagnostics(s)
-            d["country"] = to_canonical(ctry) or ctry
-
-            if d["ok"] and _has_usable_weekly_series(s, min_week_points=4):
-                feats = _build_features(s)
-                if feats:
-                    usable_rows.append(feats)
-                    usable_names.append(d["country"])
-                    d["reason"] = ""
-                else:
-                    d["ok"] = False
-                    d["reason"] = "insufficient-features"
-            else:
-                if d["reason"] == "":
-                    d["reason"] = "insufficient-weekly-points"
-                d["ok"] = False
-
-            diag_rows.append(d)
-
-        # --- Show diagnostics table for transparency
-        diag_df = pd.DataFrame(diag_rows)[
-            ["country", "ok", "reason", "len", "nnz", "first", "last"]
-        ].sort_values(["ok", "country"], ascending=[False, True])
-        with st.expander("Why some countries were skipped? (diagnostics)", expanded=False):
-            st.dataframe(diag_df, use_container_width=True)
-
-        if not usable_rows:
-            st.warning(
-                "No usable data for the selected inputs after filtering. "
-                "Tips: try a different metric, increase the look-back window, "
-                "or hand-pick a few countries with richer data."
-            )
+    # >>> EVERYTHING BELOW stays INSIDE this 'with' block <<<
+    if run_clusters:
+        countries_for_cluster = country_selection
+        if not countries_for_cluster:
+            st.warning("No countries selected. Pick at least one in the Filters section.")
+        elif not _SK_AVAILABLE:
+            st.warning("Install scikit-learn to enable clustering: `pip install scikit-learn`")
         else:
-           
-            X = pd.DataFrame(usable_rows, index=usable_names).fillna(0.0)
-            Z = X.values
-            if normalize_switch:
-                Z = StandardScaler().fit_transform(Z)
+            db_min, db_max = _mart_global_date_span()
+            end_c_dt = min(pd.to_datetime(end_str), db_max)
+            start_c_dt = max(pd.to_datetime(DATA_MIN), end_c_dt - pd.Timedelta(days=int(window_days)))
+            start_c = clamp_date(start_c_dt.strftime("%Y-%m-%d"))
+            end_c   = clamp_date(end_c_dt.strftime("%Y-%m-%d"))
 
-            # ---- safety: tiny datasets
-            n_samples = Z.shape[0]
-            if n_samples < 2:
-                st.warning("Not enough countries with usable data to cluster (need at least 2).")
-                st.dataframe(X.round(3), use_container_width=True)
-                st.stop()
-
-            # cap clusters to a valid range
-            n_clusters = int(n_clusters)
-            n_clusters = max(2, min(n_clusters, n_samples))
-            if n_clusters != int(st.session_state.get("last_n_clusters", n_clusters)):
-                st.session_state["last_n_clusters"] = n_clusters  # optional UI memory
-            if n_clusters > n_samples:
-                st.warning(
-                    f"Reducing clusters to {n_clusters} because only {n_samples} "
-                    f"countries have data in the selected range."
-                )
-
-            # fit kmeans
-            kmeans = KMeans(n_clusters=n_clusters, n_init="auto", random_state=42)
-            labels = kmeans.fit_predict(Z)
-
-            # silhouette only makes sense if >1 label and >2 samples
-            try:
-                sil = silhouette_score(Z, labels) if (len(set(labels)) > 1 and n_samples > n_clusters) else float("nan")
-            except Exception:
-                sil = float("nan")
-
-            result = X.copy()
-            result["cluster"] = labels
-            st.caption(f"Silhouette score: {sil:.3f}" if sil == sil else "Silhouette score: n/a")
-            st.dataframe(result.sort_values(["cluster"] + list(X.columns)).round(3), use_container_width=True)
-
-            # ---- PCA plot (robust n_components)
-            try:
-                pca_components = min(2, n_samples, Z.shape[1])
-                if pca_components >= 2:
-                    p = PCA(n_components=2, random_state=42).fit_transform(Z)
-                    figc = go.Figure()
-                    for k in sorted(set(labels)):
-                        mask = labels == k
-                        figc.add_trace(go.Scatter(
-                            x=p[mask, 0], y=p[mask, 1],
-                            mode="markers+text",
-                            text=[n for n, m in zip(usable_names, mask) if m],
-                            textposition="top center",
-                            name=f"Cluster {k}",
-                            opacity=0.9
-                        ))
-                    figc.update_layout(
-                        title=f"Clusters (PCA view) — {cl_metric_label} — last {int(window_days)} days",
-                        xaxis_title="PC1", yaxis_title="PC2",
-                        margin=dict(l=40, r=30, t=60, b=40),
-                        legend=dict(orientation="h")
-                    )
-                    st.plotly_chart(figc, use_container_width=True, theme=None)
+            # scan countries
+            diag_rows = []
+            usable_rows, usable_names = [], []
+            for ctry in countries_for_cluster[:80]:
+                s = _fetch_series(ctry, cl_metric, start_c, end_c)
+                d = _series_diagnostics(s)
+                d["country"] = to_canonical(ctry) or ctry
+                if d["ok"] and _has_usable_weekly_series(s, min_week_points=4):
+                    feats = _build_features(s)
+                    if feats:
+                        usable_rows.append(feats)
+                        usable_names.append(d["country"])
+                        d["reason"] = ""
+                    else:
+                        d["ok"] = False
+                        d["reason"] = "insufficient-features"
                 else:
-                    st.info("Not enough samples to draw a 2D PCA plot.")
-            except Exception as e:
-                st.warning(f"PCA visualization failed: {e}")
+                    if d["reason"] == "":
+                        d["reason"] = "insufficient-weekly-points"
+                    d["ok"] = False
+                diag_rows.append(d)
+
+            diag_df = pd.DataFrame(diag_rows)[
+                ["country", "ok", "reason", "len", "nnz", "first", "last"]
+            ].sort_values(["ok", "country"], ascending=[False, True])
+            with st.expander("Why some countries were skipped? (diagnostics)", expanded=False):
+                st.dataframe(diag_df, use_container_width=True)
+
+            if not usable_rows:
+                st.warning("No usable data after filtering. Try a different metric/window or more countries.")
+            else:
+                X = pd.DataFrame(usable_rows, index=usable_names).fillna(0.0)
+                Z = StandardScaler().fit_transform(X.values) if normalize_switch else X.values
+
+                n_samples = Z.shape[0]
+                if n_samples < 2:
+                    st.warning("Not enough countries with usable data to cluster (need at least 2).")
+                    st.dataframe(X.round(3), use_container_width=True)
+                else:
+                    k = int(max(2, min(int(n_clusters), n_samples)))
+                    kmeans = KMeans(n_clusters=k, n_init="auto", random_state=42)
+                    labels = kmeans.fit_predict(Z)
+
+                    try:
+                        sil = silhouette_score(Z, labels) if (len(set(labels)) > 1 and n_samples > k) else float("nan")
+                    except Exception:
+                        sil = float("nan")
+
+                    result = X.copy()
+                    result["cluster"] = labels
+                    st.caption(f"Silhouette score: {sil:.3f}" if sil == sil else "Silhouette score: n/a")
+                    st.dataframe(result.sort_values(["cluster"] + list(X.columns)).round(3), use_container_width=True)
+
+                    # PCA
+                    if min(2, n_samples, Z.shape[1]) >= 2:
+                        p = PCA(n_components=2, random_state=42).fit_transform(Z)
+                        figc = go.Figure()
+                        for k_lab in sorted(set(labels)):
+                            m = labels == k_lab
+                            figc.add_trace(go.Scatter(
+                                x=p[m, 0], y=p[m, 1],
+                                mode="markers+text",
+                                text=[n for n, mm in zip(usable_names, m) if mm],
+                                textposition="top center",
+                                name=f"Cluster {k_lab}",
+                                opacity=0.9
+                            ))
+                        figc.update_layout(
+                            title=f"Clusters (PCA view) — {cl_metric_label} — last {int(window_days)} days",
+                            xaxis_title="PC1", yaxis_title="PC2",
+                            margin=dict(l=40, r=30, t=60, b=40),
+                            legend=dict(orientation="h")
+                        )
+                        st.plotly_chart(figc, use_container_width=True, theme=None)
+                    else:
+                        st.info("Not enough samples to draw a 2D PCA plot.")
+
 
 # --- Comments (always last tab)
 with tabs[-1]:
