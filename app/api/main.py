@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from cachetools import TTLCache, cached
 import pandas as pd
+from fastapi import Query
+
 
 from app.core.config import CORS_ORIGINS
 from app.api.schemas import MetricsQuery, CommentIn, MetricsRow
@@ -62,6 +64,34 @@ def comments_add(c: CommentIn):
     res = upsert_comment(c.country, c.date, c.metric, c.user, c.comment, c.value)
     _cache.clear()
     return {"ok": True, "matched": res.matched_count, "modified": res.modified_count, "upserted_id": str(res.upserted_id) if res.upserted_id else None}
+
+
+@app.get("/comments/{country}/{metric}", response_model=dict)
+def comments_list(
+    country: str,
+    metric: str,
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+):
+    start = start or "2020-01-01"
+    end = end or "2100-01-01"
+
+    docs = get_annotations(country, metric, start, end)
+
+    items = []
+    for d in docs:
+        for c in d.get("comments", []):
+            ts = c.get("timestamp")
+            ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            items.append({
+                "timestamp": ts_str,
+                "user": c.get("user"),
+                "text": c.get("text"),
+                "value": c.get("value"),
+            })
+
+    items.sort(key=lambda x: x["timestamp"], reverse=True)
+    return {"comments": items[:200]}
 
 
 @app.get("/healthz")
