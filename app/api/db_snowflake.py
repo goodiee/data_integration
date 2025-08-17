@@ -108,4 +108,3 @@ def fetch_metric_series(country: str, metric: str, start: str, end: str) -> List
         con.close()
 
 
-

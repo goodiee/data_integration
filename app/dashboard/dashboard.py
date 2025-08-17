@@ -149,37 +149,46 @@ with g3:
 
 
 # --- Metric control only on Overview (g2), empty otherwise
+# --- Metric control: visible everywhere, enabled only on Overview & Forecast
 with g2:
-    if section == "Overview":
-        # determine current index for the stored metric value
-        try:
-            current_label_idx = metric_labels.index(
-                next(lbl for lbl, val in metric_choices if val == st.session_state["metric_value"])
-            )
-        except StopIteration:
-            current_label_idx = metric_labels.index(default_label) if default_label in metric_labels else 0
+    # figure out the label that matches the stored metric value
+    try:
+        current_label = next(lbl for lbl, val in metric_choices if val == st.session_state["metric_value"])
+    except StopIteration:
+        # fallback if current value not in the choices (e.g., country changed)
+        current_label = default_label if default_label in metric_labels else (metric_labels[0] if metric_labels else "")
+        if current_label:
+            st.session_state["metric_value"] = metric_map[current_label]
 
-        sel_label = st.selectbox(
-            "Metric",
-            options=metric_labels,
-            index=current_label_idx,
-            key=f"{KEY_PREFIX}_metric_label",
-            help="Choose what to visualize.",
-        )
+    disabled = section not in ("Overview", "Forecast")
+
+    sel_label = st.selectbox(
+        "Metric",
+        options=metric_labels,
+        index=metric_labels.index(current_label) if current_label in metric_labels else 0,
+        key=f"{KEY_PREFIX}_metric_label",
+        help=("Choose what to visualize." if not disabled
+              else "Metric is shown for context. Switch to Overview or Forecast to change it."),
+        disabled=disabled,
+    )
+
+    # Only update the metric when the control is enabled
+    if not disabled and sel_label in metric_map:
         st.session_state["metric_value"] = metric_map[sel_label]
-        metric = st.session_state["metric_value"]  # keep local var in sync
-    else:
-        st.empty()
+
+    # keep local var in sync for the rest of the script
+    metric = st.session_state["metric_value"]
 
 # --- Update button only on Overview (g4)
 update_clicked_overview = False
 with g4:
-    if section == "Overview":
-        update_clicked_overview = st.button(
-            "Update chart", key=f"{KEY_PREFIX}_update_chart_btn_overview"
-        )
-    else:
-        st.empty()
+    # push the button down a bit
+    st.markdown("<div style='height:25px'></div>", unsafe_allow_html=True)
+    update_clicked_overview = st.button(
+        "Update chart",
+        key=f"{KEY_PREFIX}_update_chart_btn_overview",
+    )
+
 
 # Dates for renderers
 start_str = clamp_date(start_d.strftime("%Y-%m-%d"))

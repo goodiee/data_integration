@@ -8,7 +8,7 @@ SNOWFLAKE = {
     "user": os.getenv("SNOWFLAKE_USER"),
     "password": os.getenv("SNOWFLAKE_PASSWORD"),
     "role": os.getenv("SNOWFLAKE_ROLE", "ACCOUNTADMIN"),
-    "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+    "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE"),
     "database": os.getenv("SNOWFLAKE_DATABASE", "COVID_DB"),
     "schema": os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC"),
 }
