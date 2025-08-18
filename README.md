@@ -1,4 +1,4 @@
-# COVID-19 Dachboard (Streamlit + FastAPI + Snowflake + MongoDB)
+# COVID-19 Dashboard (Streamlit + FastAPI + Snowflake + MongoDB)
 
 Interactive Streamlit dashboard backed by a FastAPI service.
 Time-series metrics are read from Snowflake; user comments/annotations are stored in MongoDB.
@@ -102,3 +102,4 @@ notebooks/conversion.ipynb
 - Makes the GDP data readable and join-friendly with the COVID time series for comparisons/insights.
 
 <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/0f6c341a-38d8-4ef9-b971-a143d2fdd4c0" />
+
