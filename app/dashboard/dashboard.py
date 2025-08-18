@@ -353,8 +353,14 @@ elif section == "Clustering":
             key=f"{KEY_PREFIX}_window_days",
         )
     with c2:
+        # push the checkbox a bit lower in the column
+        st.markdown("<div style='height:40px'></div>", unsafe_allow_html=True)
         normalize_switch = st.checkbox(
-            "Standardize features", value=True, key=f"{KEY_PREFIX}_normalize_switch"
+            "Standardize features",
+            value=True,
+            key=f"{KEY_PREFIX}_normalize_switch",
+            help="Scale each feature to zero mean and unit variance: z = (x−μ)/σ. "
+                 "Helps K-Means/PCA when features have different scales."
         )
 
     if st.button("Run clustering", key=f"{KEY_PREFIX}_run_clusters_btn"):
