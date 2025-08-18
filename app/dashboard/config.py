@@ -2,7 +2,7 @@ from datetime import datetime
 import streamlit as st
 
 def set_page():
-    st.set_page_config(page_title="COVID-19 Dashboard", page_icon="🧭", layout="wide")
+    st.set_page_config(page_title="COVID-19 Dashboard", layout="wide")
 
 API_BASE = "http://localhost:8000"
 

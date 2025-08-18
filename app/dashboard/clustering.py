@@ -1,31 +1,39 @@
+from __future__ import annotations
+
+from typing import Any, Dict
+
 import pandas as pd
 import requests
 import plotly.graph_objects as go
 import streamlit as st
-from config import API_BASE, DATA_MIN
-from utils import to_canonical
-from charts import build_empty_fig
-
-
-import numpy as np
-from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler
+
+from app.dashboard.config import API_BASE, DATA_MIN
+from app.dashboard.utils import to_canonical
+from app.dashboard.charts import build_empty_fig
 
 
-def series_diagnostics(s: pd.Series) -> dict:
+# Diagnostics & helpers
+def series_diagnostics(s: pd.Series) -> Dict[str, Any]:
+    """Basic sanity info about a time series."""
     if s is None or s.empty or not isinstance(s.index, pd.DatetimeIndex):
         return {"ok": False, "reason": "empty-or-non-datetime", "len": 0, "nnz": 0, "first": None, "last": None}
     snnz = s.dropna()
     return {
-        "ok": True, "reason": "",
-        "len": int(len(s)), "nnz": int(len(snnz)),
+        "ok": True,
+        "reason": "",
+        "len": int(len(s)),
+        "nnz": int(len(snnz)),
         "first": s.index.min().date().isoformat() if len(s) else None,
         "last": s.index.max().date().isoformat() if len(s) else None,
     }
 
+
 def has_usable_weekly_series(s: pd.Series, min_week_points: int = 4) -> bool:
+    """True if resampled weekly mean has enough non-null points."""
     if s is None or s.empty or not isinstance(s.index, pd.DatetimeIndex):
         return False
     s = s.sort_index()
@@ -37,20 +45,21 @@ def has_usable_weekly_series(s: pd.Series, min_week_points: int = 4) -> bool:
         return False
     return w.dropna().shape[0] >= min_week_points
 
-@st.cache_data(ttl=60*30, show_spinner=False)
+
+@st.cache_data(ttl=60 * 30, show_spinner=False)
 def fetch_series(country: str, metric_value: str, start: str, end: str) -> pd.Series:
-    def _empty():
+    """Fetch one metric series via API → daily float Series (interpolated)."""
+    def _empty() -> pd.Series:
         return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
 
     payload = {"country": country, "metric": metric_value, "start": start, "end": end}
     try:
         r = requests.post(f"{API_BASE}/metrics", json=payload, timeout=20)
+        r.raise_for_status()
     except requests.exceptions.RequestException:
         return _empty()
-    if r.status_code != 200:
-        return _empty()
 
-    d = r.json().get("data", [])
+    d = (r.json() or {}).get("data", [])
     if not d:
         return _empty()
 
@@ -59,25 +68,27 @@ def fetch_series(country: str, metric_value: str, start: str, end: str) -> pd.Se
         return _empty()
 
     idx = pd.DatetimeIndex(pd.to_datetime(df["date"], errors="coerce")).tz_localize(None)
-    s = pd.Series(df["value"].values, index=idx).sort_index()
+    s = pd.Series(pd.to_numeric(df["value"], errors="coerce").values, index=idx).sort_index()
     s = s[~s.index.isna()]
     if s.empty:
         return _empty()
 
+    # aim for daily continuity for downstream resampling
     try:
         s = s.asfreq("D").interpolate("time")
     except Exception:
         pass
     return s
 
-def build_features(series: pd.Series) -> dict:
+
+def build_features(series: pd.Series) -> Dict[str, float | int]:
+    """Extract simple features used for clustering."""
     if series is None or len(series) == 0:
         return {}
     if not isinstance(series.index, pd.DatetimeIndex):
         try:
             idx = pd.to_datetime(series.index, errors="coerce")
-            series = pd.Series(series.values, index=idx)
-            series = series[~series.index.isna()]
+            series = pd.Series(series.values, index=idx).dropna()
         except Exception:
             return {}
     if series.empty:
@@ -98,10 +109,10 @@ def build_features(series: pd.Series) -> dict:
         w = series.resample("W").mean()
     except Exception:
         return {}
-
     if w.dropna().shape[0] < 4:
         return {}
 
+    # features (robust, with fallbacks)
     try:
         growth = (w.iloc[-1] - w.iloc[0]) / (abs(w.iloc[0]) + 1e-6)
     except Exception:
@@ -135,23 +146,40 @@ def build_features(series: pd.Series) -> dict:
         "recent_trend": _clean(recent_trend),
     }
 
-def run_clustering(country_selection, metric_label: str, metric_value: str,
-                   window_days: int, end_dt, min_start: str = DATA_MIN,
-                   standardize: bool = True):
+
+def run_clustering(
+    country_selection,
+    metric_label: str,
+    metric_value: str,
+    window_days: int,
+    end_dt,
+    min_start: str = DATA_MIN,
+    standardize: bool = True,
+) -> Dict[str, Any]:
     """
-    Returns dict with:
-      diag_df, result_df (features+cluster), silhouette, pca_fig (or None)
-      and possibly warnings as list of strings.
+    Returns:
+      {
+        "warnings": list[str],
+        "diag_df": DataFrame,
+        "result_df": DataFrame,   # features + cluster
+        "silhouette": float,
+        "pca_fig": Figure,
+      }
     """
-    warnings = []
+    warnings: list[str] = []
+
+    # window to analyze
     end_c_dt = end_dt
     start_c_dt = max(pd.to_datetime(min_start), end_c_dt - pd.Timedelta(days=int(window_days)))
     start_c = start_c_dt.strftime("%Y-%m-%d")
-    end_c   = end_c_dt.strftime("%Y-%m-%d")
+    end_c = end_c_dt.strftime("%Y-%m-%d")
 
-    diag_rows = []
-    usable_rows, usable_names = [], []
-    for ctry in country_selection[:80]:
+    # gather/validate features country-by-country
+    diag_rows: list[Dict[str, Any]] = []
+    usable_rows: list[Dict[str, float | int]] = []
+    usable_names: list[str] = []
+
+    for ctry in (country_selection or [])[:80]:
         s = fetch_series(ctry, metric_value, start_c, end_c)
         d = series_diagnostics(s)
         d["country"] = to_canonical(ctry) or ctry
@@ -171,6 +199,7 @@ def run_clustering(country_selection, metric_label: str, metric_value: str,
         diag_rows.append(d)
 
     diag_df = pd.DataFrame(diag_rows)[["country", "ok", "reason", "len", "nnz", "first", "last"]]
+
     if not usable_rows:
         return {
             "warnings": ["No usable data after filtering. Try a different metric/window or more countries."],
@@ -180,12 +209,13 @@ def run_clustering(country_selection, metric_label: str, metric_value: str,
             "pca_fig": build_empty_fig("Not enough samples for PCA."),
         }
 
+    # matrix (rows=countries, cols=features)
     X = pd.DataFrame(usable_rows, index=usable_names).fillna(0.0)
-    Z = StandardScaler().fit_transform(X.values) if (standardize) else X.values
+    Z = StandardScaler().fit_transform(X.values) if standardize else X.values
 
     n_samples = Z.shape[0]
     if n_samples < 2:
-        warnings.append("`Please, select more samples`")
+        warnings.append("Please select more samples.")
         return {
             "warnings": warnings,
             "diag_df": diag_df.sort_values(["ok", "country"], ascending=[False, True]),
@@ -194,9 +224,11 @@ def run_clustering(country_selection, metric_label: str, metric_value: str,
             "pca_fig": build_empty_fig("Not enough samples to draw PCA."),
         }
 
+    # pick k based on sample count
     k = max(2, min(4, n_samples))
-    kmeans = KMeans(n_clusters=k, n_init="auto", random_state=42)
+    kmeans = KMeans(n_clusters=k, n_init=10, random_state=42)
     labels = kmeans.fit_predict(Z)
+
     try:
         sil = silhouette_score(Z, labels) if (len(set(labels)) > 1 and n_samples > k) else float("nan")
     except Exception:
@@ -205,22 +237,29 @@ def run_clustering(country_selection, metric_label: str, metric_value: str,
     result = X.copy()
     result["cluster"] = labels
 
-    pca_fig = None
+    # PCA visualization (2D)
     if min(2, n_samples, Z.shape[1]) >= 2:
         p = PCA(n_components=2, random_state=42).fit_transform(Z)
         figc = go.Figure()
         for k_lab in sorted(set(labels)):
             m = labels == k_lab
-            figc.add_trace(go.Scatter(
-                x=p[m, 0], y=p[m, 1], mode="markers+text",
-                text=[n for n, mm in zip(usable_names, m) if mm],
-                textposition="top center", name=f"Cluster {k_lab}", opacity=0.9
-            ))
+            figc.add_trace(
+                go.Scatter(
+                    x=p[m, 0],
+                    y=p[m, 1],
+                    mode="markers+text",
+                    text=[n for n, mm in zip(usable_names, m) if mm],
+                    textposition="top center",
+                    name=f"Cluster {k_lab}",
+                    opacity=0.9,
+                )
+            )
         figc.update_layout(
             title=f"Clusters (PCA view) — {metric_label} — last {int(window_days)} days",
-            xaxis_title="PC1", yaxis_title="PC2",
+            xaxis_title="PC1",
+            yaxis_title="PC2",
             margin=dict(l=40, r=30, t=60, b=40),
-            legend=dict(orientation="h")
+            legend=dict(orientation="h"),
         )
         pca_fig = figc
     else:

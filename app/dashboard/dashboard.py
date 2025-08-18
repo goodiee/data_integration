@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import os
 import sys
 import pandas as pd
 import streamlit as st
 
-# Ensure project root is on sys.path (repo_root/.. -> add only once)
+# project root is importable (kept for local runs)
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
@@ -29,29 +31,24 @@ from app.dashboard.forecasting import render_forecast_chart
 from app.dashboard.clustering import run_clustering
 from app.dashboard.comments import fetch_comments, add_comment
 
-# --------- key namespace (prevents duplicate keys even if module is reloaded/imported twice)
+# Unique key namespace (avoids Streamlit duplicate-key collisions)
 KEY_PREFIX = __name__.replace(".", "_")
 
-# --- page + styles
+# Page + styles
 set_page()
 inject_styles()
 
-# --- session defaults
-if "chart_fig" not in st.session_state:
-    st.session_state.chart_fig = None
-if "chart_params" not in st.session_state:
-    st.session_state.chart_params = {}
-if "countries_default" not in st.session_state:
-    st.session_state.countries_default = ["Lithuania"]
+# Session defaults
+st.session_state.setdefault("chart_fig", None)
+st.session_state.setdefault("chart_params", {})
+st.session_state.setdefault("countries_default", ["Lithuania"])
 
-# =========================
 # Filters header
-# =========================
 st.write("### Filters")
 
 g1, g2, g3, g4 = st.columns([1.8, 1.5, 2, 0.8])
 
-# --- Countries (g1)
+# Countries (g1)
 with g1:
     all_countries = load_countries_from_mart()
 
@@ -67,48 +64,47 @@ with g1:
         key=f"{KEY_PREFIX}_countries_ms",
         help="Select one or more countries.",
     )
-    st.session_state.countries_default = [
-        c for c in country_selection if c in all_countries
-    ] or safe_defaults
 
-# Primary country
+    # persist last good selection
+    st.session_state.countries_default = (
+        [c for c in country_selection if c in all_countries] or safe_defaults
+    )
+
+# Primary country = first selection (or first available)
 primary_country = (
     country_selection[0]
     if country_selection
     else (all_countries[0] if all_countries else "")
 )
 
-allowed = gdp_allowed(primary_country) if primary_country else False
+allowed_gdp = gdp_allowed(primary_country) if primary_country else False
 st.markdown(
     '<span class="badge badge-success">GDP metrics available (for primary country)</span>'
-    if allowed
+    if allowed_gdp
     else '<span class="badge badge-secondary">GDP metrics unavailable for this country</span>',
     unsafe_allow_html=True,
 )
 
-# --- metric choices & current value (no UI here yet)
-metric_choices = build_metric_choices(allowed)
-metric_labels = [l for l, _ in metric_choices]
-metric_map = {l: v for l, v in metric_choices}
+# Metric choices
+metric_choices = build_metric_choices(allowed_gdp)
+metric_labels = [lbl for lbl, _ in metric_choices]
+metric_map = {lbl: val for lbl, val in metric_choices}
 default_label = "New Cases per 100k"
 default_metric_value = metric_map.get(
     default_label, metric_choices[0][1] if metric_choices else "NEW_CASES_PER_100K"
 )
 
-# ensure we always have some metric in session state
-if "metric_value" not in st.session_state:
-    st.session_state["metric_value"] = default_metric_value
+st.session_state.setdefault("metric_value", default_metric_value)
 metric = st.session_state["metric_value"]
 
-# --- DB date span
+# DB date span (clamp UI range to actual data)
 db_min_dt, db_max_dt = mart_global_date_span()
 default_start = max(DATA_MIN_D, db_min_dt.date())
 default_end = min(DATA_MAX_D, db_max_dt.date())
 
-# --- Section switch (acts like tabs)
+# Section switch (acts like tabs)
 section_labels = ["Overview", "Match recognition"]
-show_forecast_tab = is_forecastable(metric) and len(country_selection) == 1
-if show_forecast_tab:
+if is_forecastable(metric) and len(country_selection) == 1:
     section_labels.append("Forecast")
 section_labels += ["Clustering", "Comments"]
 
@@ -118,9 +114,10 @@ section = st.radio(
     horizontal=True,
     key=f"{KEY_PREFIX}_section",
 )
-# --- Always-visible calendars (no "Choose a date range" preset UI)
+
+# Date range (always visible)
 rng_key = f"{KEY_PREFIX}_date_range"
-if rng_key not in st.session_state or not st.session_state[rng_key]:
+if not st.session_state.get(rng_key):
     st.session_state[rng_key] = (default_start, default_end)
 
 with g3:
@@ -147,58 +144,42 @@ with g3:
         start_d, end_d = end_d, start_d
     st.session_state[rng_key] = (start_d, end_d)
 
-
-# --- Metric control only on Overview (g2), empty otherwise
-# --- Metric control: visible everywhere, enabled only on Overview & Forecast
+# Metric control (g2): enabled on Overview & Forecast
 with g2:
-    # figure out the label that matches the stored metric value
     try:
         current_label = next(lbl for lbl, val in metric_choices if val == st.session_state["metric_value"])
     except StopIteration:
-        # fallback if current value not in the choices (e.g., country changed)
         current_label = default_label if default_label in metric_labels else (metric_labels[0] if metric_labels else "")
         if current_label:
             st.session_state["metric_value"] = metric_map[current_label]
 
-    disabled = section not in ("Overview", "Forecast")
+    control_enabled = section in ("Overview", "Forecast")
 
     sel_label = st.selectbox(
         "Metric",
         options=metric_labels,
         index=metric_labels.index(current_label) if current_label in metric_labels else 0,
         key=f"{KEY_PREFIX}_metric_label",
-        help=("Choose what to visualize." if not disabled
+        help=("Choose what to visualize." if control_enabled
               else "Metric is shown for context. Switch to Overview or Forecast to change it."),
-        disabled=disabled,
+        disabled=not control_enabled,
     )
-
-    # Only update the metric when the control is enabled
-    if not disabled and sel_label in metric_map:
+    if control_enabled and sel_label in metric_map:
         st.session_state["metric_value"] = metric_map[sel_label]
-
-    # keep local var in sync for the rest of the script
     metric = st.session_state["metric_value"]
 
-# --- Update button only on Overview (g4)
-update_clicked_overview = False
+# Update button (g4) only on Overview
 with g4:
-    # push the button down a bit
     st.markdown("<div style='height:25px'></div>", unsafe_allow_html=True)
-    update_clicked_overview = st.button(
-        "Update chart",
-        key=f"{KEY_PREFIX}_update_chart_btn_overview",
-    )
+    update_clicked_overview = st.button("Update chart", key=f"{KEY_PREFIX}_update_chart_btn_overview")
 
-
-# Dates for renderers
+# String dates used by renderers
 start_str = clamp_date(start_d.strftime("%Y-%m-%d"))
 end_str = clamp_date(end_d.strftime("%Y-%m-%d"))
 
-# =========================
 # Sections
-# =========================
 
-# --- Overview
+# Overview
 if section == "Overview":
     if not country_selection:
         st.info("Select at least one country to render the chart.")
@@ -209,15 +190,17 @@ if section == "Overview":
                 f"(you selected {len(country_selection)} countries)."
             )
 
-        # render chart when clicked / first time / metric changed
-        if (
-            update_clicked_overview
-            or st.session_state.chart_fig is None
-            or st.session_state.chart_params.get("metric") != metric
-            or st.session_state.chart_params.get("country") != primary_country
-            or st.session_state.chart_params.get("start") != start_str
-            or st.session_state.chart_params.get("end") != end_str
-        ):
+        # render on first load / button click / param changes
+        params_changed = any(
+            st.session_state.chart_params.get(k) != v
+            for k, v in {
+                "metric": metric,
+                "country": primary_country,
+                "start": start_str,
+                "end": end_str,
+            }.items()
+        )
+        if update_clicked_overview or st.session_state.chart_fig is None or params_changed:
             with st.spinner("Rendering chart…"):
                 fig = render_chart(primary_country, metric, start_str, end_str)
             st.session_state.chart_fig = fig
@@ -230,14 +213,13 @@ if section == "Overview":
 
         st.plotly_chart(st.session_state.chart_fig, use_container_width=True, theme=None)
 
-# --- Match recognition
+# Match recognition
 elif section == "Match recognition":
     st.markdown("#### Match recognition")
 
     if not primary_country:
         st.info("Select at least one country to run patterns.")
     else:
-        # pattern picker
         pattern = st.selectbox(
             "Pattern",
             ["Rising streaks (cases)", "Spike day (cases)", "Vaccination surge"],
@@ -245,52 +227,37 @@ elif section == "Match recognition":
             help="Only the relevant controls for the chosen pattern will appear.",
         )
 
-        # show only the relevant controls
+        # relevant controls only
         params_box = st.container()
         with params_box:
             if pattern == "Rising streaks (cases)":
-                c1 = st.columns([1.0])[0]
-                with c1:
-                    min_len = st.number_input(
-                        "Min streak length",
-                        min_value=2,
-                        max_value=30,
-                        value=3,
-                        step=1,
-                        key=f"{KEY_PREFIX}_mr_min_len",
-                        help="Number of consecutive up-days required.",
-                    )
+                min_len = st.number_input(
+                    "Min streak length",
+                    min_value=2, max_value=30, value=3, step=1,
+                    key=f"{KEY_PREFIX}_mr_min_len",
+                    help="Number of consecutive up-days required.",
+                )
             elif pattern == "Spike day (cases)":
-                c1 = st.columns([1.0])[0]
-                with c1:
-                    spike_mult = st.number_input(
-                        "Spike × previous",
-                        min_value=1.1,
-                        max_value=10.0,
-                        value=1.5,
-                        step=0.1,
-                        key=f"{KEY_PREFIX}_mr_spike_mult",
-                        help="A day is a spike if cases ≥ this multiplier × previous day.",
-                    )
-            else:  # Vaccination surge
-                c1 = st.columns([1.0])[0]
-                with c1:
-                    vax_min_len = st.number_input(
-                        "Vax surge min len",
-                        min_value=2,
-                        max_value=30,
-                        value=5,
-                        step=1,
-                        key=f"{KEY_PREFIX}_mr_vax_min_len",
-                        help="Consecutive up-days in DAILY_VACCINATIONS required.",
-                    )
+                spike_mult = st.number_input(
+                    "Spike × previous",
+                    min_value=1.1, max_value=10.0, value=1.5, step=0.1,
+                    key=f"{KEY_PREFIX}_mr_spike_mult",
+                    help="A day is a spike if cases ≥ this multiplier × previous day.",
+                )
+            else:
+                vax_min_len = st.number_input(
+                    "Vax surge min len",
+                    min_value=2, max_value=30, value=5, step=1,
+                    key=f"{KEY_PREFIX}_mr_vax_min_len",
+                    help="Consecutive up-days in DAILY_VACCINATIONS required.",
+                )
 
         st.caption(
             f"Country: **{to_canonical(primary_country) or primary_country}**  |  "
             f"Window: **{start_str} → {end_str}**"
         )
 
-        # run
+        # run + show
         if st.button("Run MATCH_RECOGNIZE", key=f"{KEY_PREFIX}_mr_run_btn"):
             with st.spinner("Querying…"):
                 if pattern == "Rising streaks (cases)":
@@ -337,7 +304,7 @@ elif section == "Match recognition":
                     key=f"{KEY_PREFIX}_mr_dl_btn",
                 )
 
-            # chart overlay (always render, even if there were no matches)
+            # overlay chart (always render)
             mr_fig = render_match_recognition_chart(
                 pattern=pattern,
                 country=primary_country,
@@ -349,29 +316,25 @@ elif section == "Match recognition":
             )
             st.plotly_chart(mr_fig, use_container_width=True, theme=None)
 
-# --- Forecast (only visible if added to radio options)
-elif section == "Forecast" and show_forecast_tab:
+# Forecast
+elif section == "Forecast" and is_forecastable(metric) and len(country_selection) == 1:
     st.markdown("#### Forecast")
     c1, c2 = st.columns([1, 1])
     with c1:
         horizon = st.number_input(
             "Horizon (days)",
-            min_value=7,
-            max_value=90,
-            value=14,
-            step=1,
+            min_value=7, max_value=90, value=14, step=1,
             key=f"{KEY_PREFIX}_forecast_horizon",
         )
     with c2:
         st.caption("Model: ETS (weekly seasonality, damped trend)")
+
     if st.button("Run forecast", key=f"{KEY_PREFIX}_run_fc_btn"):
         with st.spinner("Fitting model…"):
-            fc_fig = render_forecast_chart(
-                primary_country, metric, start_str, end_str, horizon=int(horizon)
-            )
+            fc_fig = render_forecast_chart(primary_country, metric, start_str, end_str, horizon=int(horizon))
         st.plotly_chart(fc_fig, use_container_width=True, theme=None)
 
-# --- Clustering
+# Clustering
 elif section == "Clustering":
     st.markdown("#### Clustering (regions)")
 
@@ -382,32 +345,19 @@ elif section == "Clustering":
     )
     cl_metric = dict(base_metric_options())[cl_metric_label]
 
-    c1, c2, c3 = st.columns([1, 1, 1])
+    c1, c2 = st.columns([1, 1])
     with c1:
         window_days = st.number_input(
             "Look-back window (days)",
-            min_value=30,
-            max_value=400,
-            value=180,
-            step=10,
+            min_value=30, max_value=400, value=180, step=10,
             key=f"{KEY_PREFIX}_window_days",
         )
     with c2:
-        n_clusters = st.number_input(
-            "Clusters (k)",
-            min_value=2,
-            max_value=10,
-            value=4,
-            step=1,
-            key=f"{KEY_PREFIX}_n_clusters",
-        )
-    with c3:
         normalize_switch = st.checkbox(
             "Standardize features", value=True, key=f"{KEY_PREFIX}_normalize_switch"
         )
 
-    run_clusters = st.button("Run clustering", key=f"{KEY_PREFIX}_run_clusters_btn")
-    if run_clusters:
+    if st.button("Run clustering", key=f"{KEY_PREFIX}_run_clusters_btn"):
         if not country_selection:
             st.warning("No countries selected. Pick at least one in the Filters section.")
         else:
@@ -432,51 +382,93 @@ elif section == "Clustering":
                 st.dataframe(res["result_df"], use_container_width=True)
                 st.plotly_chart(res["pca_fig"], use_container_width=True, theme=None)
 
-# --- Comments
+# Comments
 elif section == "Comments":
-    if "comment_seed" not in st.session_state:
-        st.session_state.comment_seed = 0
-
+    st.session_state.setdefault("comment_seed", 0)
     st.markdown("### Add annotation")
 
+    # Who to apply the comment to?
+    tgt_label_all = f"All selected ({len(country_selection)})"
+    tgt_mode = st.radio(
+        "Apply comment to",
+        ["Primary only", "Specific country", tgt_label_all],
+        horizontal=True,
+        key=f"{KEY_PREFIX}_tgt_mode",
+    )
+
+    if tgt_mode == "Specific country":
+        specific_options = country_selection or all_countries
+        specific_country = st.selectbox(
+            "Country", options=specific_options, key=f"{KEY_PREFIX}_tgt_specific_country"
+        )
+        targets = [specific_country] if specific_country else []
+    elif tgt_mode == tgt_label_all:
+        targets = list(country_selection)
+    else:
+        targets = [primary_country] if primary_country else []
+
+    # Inputs where we use the chart/filter end date for the per-day comment
     seed = st.session_state.comment_seed
     user_key = f"{KEY_PREFIX}_comment_user_{seed}"
     text_key = f"{KEY_PREFIX}_comment_text_{seed}"
     btn_key = f"{KEY_PREFIX}_comment_submit_{seed}"
 
-    box = st.container(border=True)
-    with box:
+    with st.container(border=True):
         c1, c2, c3 = st.columns([1, 3, 0.6])
         with c1:
             st.text_input("Your name", key=user_key)
         with c2:
-            st.text_input("Comment", key=text_key)
+            st.text_input(
+                "Comment",
+                key=text_key,
+                help="Date is auto-set to the current chart’s end date.",
+            )
         with c3:
             submit = st.button("Submit", key=btn_key)
 
     if submit:
-        name = st.session_state.get(user_key, "").strip()
-        text = st.session_state.get(text_key, "").strip()
+        name = (st.session_state.get(user_key) or "").strip()
+        text = (st.session_state.get(text_key) or "").strip()
+
         if not (name and text):
             st.warning("Please provide your name and a comment.")
+        elif not targets:
+            st.warning("Select at least one country.")
         else:
-            canon = to_canonical(primary_country or "")
-            end_for_comment = clamp_date(
-                (st.session_state.chart_params.get("end") if st.session_state.get("chart_params") else None)
-            )
-            code, msg = add_comment(
-                canon, end_for_comment, st.session_state.get("metric_value"), name, text
-            )
-            if code != 200:
-                st.error(f"Failed to add comment: {code} {msg}")
-            else:
-                st.toast("Comment added!", icon="✅")
+            # choose the day to attach the comment to (end of the current window)
+            end_for_comment = clamp_date((st.session_state.get("chart_params", {}).get("end")) or end_str)
+            metric_for_comment = st.session_state.get("metric_value")
+
+            successes, failures = 0, []
+            for ctry in targets:
+                canon = to_canonical(ctry or "")
+                code, msg = add_comment(canon, end_for_comment, metric_for_comment, name, text)
+                if code == 200:
+                    successes += 1
+                else:
+                    failures.append(f"{ctry}: {code} {msg}")
+
+            if successes:
+                st.toast(
+                    f"Comment added to {successes} countr{'y' if successes == 1 else 'ies'} ✅",
+                    icon="✅",
+                )
                 st.session_state.comment_seed += 1
                 st.rerun()
+            if failures:
+                st.error("Some saves failed:\n" + "\n".join(failures))
 
-    canon = to_canonical(primary_country or "")
+    # Show comments per selected country (for the current metric)
     metric_for_list = st.session_state.get("metric_value")
-    ok, items = fetch_comments(canon, metric_for_list)
-    with st.expander("Comments", expanded=True):
-        for line in items:
-            st.write(line if ok else f"⚠️ {line}")
+    if country_selection:
+        for c in country_selection:
+            canon = to_canonical(c or "")
+            ok, items = fetch_comments(canon, metric_for_list)
+            with st.expander(f"Comments — {canon or c}", expanded=False):
+                if not items:
+                    st.caption("No comments yet.")
+                else:
+                    for line in items:
+                        st.write(line if ok else f"⚠️ {line}")
+    else:
+        st.info("Select at least one country to see comments.")

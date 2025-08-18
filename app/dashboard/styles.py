@@ -1,6 +1,7 @@
-# dashboard/styles.py
 import streamlit as st
 
+
+# some css bungle for dashboard
 CSS = """
 <style>
 .topbar {background:#3f87c0; color:white; padding:12px 16px; border-radius:10px;}
@@ -12,5 +13,5 @@ CSS = """
 
 def inject():
     st.markdown(CSS, unsafe_allow_html=True)
-    st.markdown('<div class="topbar"><span>🧭</span> <strong>COVID-19 Interactive Dashboard</strong></div>',
+    st.markdown('<div class="topbar"><span></span> <strong>COVID-19 Interactive Dashboard</strong></div>',
                 unsafe_allow_html=True)
