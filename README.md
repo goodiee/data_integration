@@ -1,4 +1,4 @@
-# COVID-19 Dashboard (Streamlit + FastAPI + Snowflake + MongoDB)
+# COVID-19 Dachboard (Streamlit + FastAPI + Snowflake + MongoDB)
 
 Interactive Streamlit dashboard backed by a FastAPI service.
 Time-series metrics are read from Snowflake; user comments/annotations are stored in MongoDB.
@@ -49,9 +49,14 @@ Time-series metrics are read from Snowflake; user comments/annotations are store
 - Frontend: Streamlit, Plotly
 - ML / Stats: scikit-learn (KMeans, PCA), statsmodels (ETS), SciPy
 - Utilities: pandas, numpy, requests, python-dotenv
+- Python: 3.11.9
 
 ## Setup 
 
+```
+git clone https://github.com/goodiee/data_integration.git
+cd <YOUR_REPO>
+```
 ### create & activate venv
 ```
 python -m venv .venv
@@ -83,23 +88,47 @@ notepad .env
 ```
 scripts/eda_process.py
 ```
-
+```
+python scripts\eda_process.py
+```
 - Shows how Snowflake tables are used with the COVID-19 dataset (load/transform/inspect).
 - Can generate per-country reports (details & plots) and save them under reports/
 
 ```
 scripts/test.py
 ```
-
+```
+python scripts\test.py
+```
 - Helps detect missed or unmapped countries (e.g., alias mismatches or data gaps).
 - Useful to understand which regions can’t be plotted/predicted due to missing series.
 
 ```
 notebooks/conversion.ipynb
 ```
-
+```
+jupyter notebook notebooks\conversion.ipynb
+```
 - Used to normalize the GDP PPP dataset into a clean long format (data/gdp_long.csv, data/gdp_ppp_long.csv).
 - Makes the GDP data readable and join-friendly with the COVID time series for comparisons/insights.
 
-<img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/0f6c341a-38d8-4ef9-b971-a143d2fdd4c0" />
+ ## GDP dataset note
+
+This project also uses an additional GDP PPP dataset to compare macroeconomic context with COVID metrics.
+Some countries may be missing or have inconsistent naming; the alias map and scripts/test.py help identify and resolve those gaps.
+
+
+# Run the app (two terminals)
+```
+uvicorn app.api.main:app --reload --port 8000
+```
+```
+streamlit run app\dashboard\dashboard.py
+```
+
+### Open:
+
+- Dashboard → http://localhost:8501
+
+  <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
 
