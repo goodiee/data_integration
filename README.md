@@ -86,17 +86,11 @@ notepad .env
 ## Data preparation & utilities
 
 ```
-scripts/eda_process.py
-```
-```
 python scripts\eda_process.py
 ```
 - Shows how Snowflake tables are used with the COVID-19 dataset (load/transform/inspect).
 - Can generate per-country reports (details & plots) and save them under reports/
 
-```
-scripts/test.py
-```
 ```
 python scripts\test.py
 ```
@@ -131,4 +125,5 @@ streamlit run app\dashboard\dashboard.py
 - Dashboard → http://localhost:8501
 
   <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
+
 
