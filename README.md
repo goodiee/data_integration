@@ -1,4 +1,4 @@
-# COVID-19 Dachboard (Streamlit + FastAPI + Snowflake + MongoDB)
+# COVID-19 Dashboard (Streamlit + FastAPI + Snowflake + MongoDB)
 
 Interactive Streamlit dashboard backed by a FastAPI service.
 Time-series metrics are read from Snowflake; user comments/annotations are stored in MongoDB.
@@ -122,6 +122,7 @@ streamlit run app\dashboard\dashboard.py
 - Dashboard → http://localhost:8501
 
   <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
+
 
 
 
