@@ -100,9 +100,6 @@ python scripts\test.py
 ```
 notebooks/conversion.ipynb
 ```
-```
-jupyter notebook notebooks\conversion.ipynb
-```
 - Used to normalize the GDP PPP dataset into a clean long format (data/gdp_long.csv, data/gdp_ppp_long.csv).
 - Makes the GDP data readable and join-friendly with the COVID time series for comparisons/insights.
 
@@ -125,5 +122,6 @@ streamlit run app\dashboard\dashboard.py
 - Dashboard → http://localhost:8501
 
   <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
+
 
 
