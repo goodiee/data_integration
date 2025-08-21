@@ -49,9 +49,11 @@ Time-series metrics are read from Snowflake; user comments/annotations are store
 - Frontend: Streamlit, Plotly
 - ML / Stats: scikit-learn (KMeans, PCA), statsmodels (ETS), SciPy
 - Utilities: pandas, numpy, requests, python-dotenv
-- Python: 3.11.9
 
 ## Setup 
+
+It is very important to have version of Python: 3.11.9!
+All following commands should be runnning in Command Prompt.
 
 ```
 git clone https://github.com/goodiee/data_integration.git
@@ -101,7 +103,7 @@ python scripts\test.py
 notebooks/conversion.ipynb
 ```
 - Used to normalize the GDP PPP dataset into a clean long format (data/gdp_long.csv, data/gdp_ppp_long.csv).
-- Makes the GDP data readable and join-friendly with the COVID time series for comparisons/insights.
+- Makes the GDP data readable and join-friendly with the COVID time series for comparisons/insights. You can run just manually .ipynb file.
 
  ## GDP dataset note
 
@@ -122,6 +124,7 @@ streamlit run app\dashboard\dashboard.py
 - Dashboard → http://localhost:8501
 
   <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
+
 
 
 
