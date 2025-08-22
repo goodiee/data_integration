@@ -57,9 +57,10 @@ All following commands should be runnning in Command Prompt.
 
 ```
 git clone https://github.com/goodiee/data_integration.git
-cd <YOUR_REPO>
+cd data_integration
 ```
 ### create & activate venv
+in the directory of created environmnet runt he following commands:
 ```
 python -m venv .venv
 .venv\Scripts\activate.bat
@@ -125,6 +126,7 @@ streamlit run app\dashboard\dashboard.py
 - Dashboard → http://localhost:8501
 
   <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
+
 
 
 
