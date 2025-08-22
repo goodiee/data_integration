@@ -1,10 +1,11 @@
 from datetime import datetime
 import streamlit as st
+import os
 
 def set_page():
     st.set_page_config(page_title="COVID-19 Dashboard", layout="wide")
 
-API_BASE = "http://localhost:8000"
+API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
 DATA_MIN = "2020-01-01"
 DATA_MAX = "2023-12-31"
