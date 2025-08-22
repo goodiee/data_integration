@@ -115,7 +115,7 @@ Some countries may be missing or have inconsistent naming; the alias map and scr
 
 # Run the app (two terminals)
 ```
-uvicorn app.api.main:app --reload --port 8000
+python -m uvicorn app.api.main:app --reload --port 8000
 ```
 ```
 streamlit run app\dashboard\dashboard.py
@@ -126,6 +126,7 @@ streamlit run app\dashboard\dashboard.py
 - Dashboard → http://localhost:8501
 
   <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
+
 
 
 
