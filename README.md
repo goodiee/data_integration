@@ -71,6 +71,7 @@ pip install -r requirements.txt
 ```
 
 ### create .env from example and edit it
+Put the environmental variables from .env txt file into .env file of project.
 ```
 copy .env.example .env
 notepad .env
@@ -124,6 +125,7 @@ streamlit run app\dashboard\dashboard.py
 - Dashboard → http://localhost:8501
 
   <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
+
 
 
 
