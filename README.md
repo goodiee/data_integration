@@ -112,8 +112,7 @@ notebooks/conversion.ipynb
 This project also uses an additional GDP PPP dataset to compare macroeconomic context with COVID metrics.
 Some countries may be missing or have inconsistent naming; the alias map and scripts/test.py help identify and resolve those gaps.
 
-
-# Run the app (two terminals)
+# Run the app locally (two terminals)
 run from the data_integration/ directory
 ```
 python -m uvicorn app.api.main:app --reload --port 8000
@@ -128,6 +127,53 @@ streamlit run app\dashboard\dashboard.py
 
   <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
 
+# Run with Docker (recommended)
+
+1) Prereqs
+- Install Docker Desktop (Windows/Mac) or Docker Engine + docker compose (Linux).
+- If using MongoDB Atlas, add your machine’s IP to Network Access in Atlas.
+2) Environment
+
+Make a .env (or copy from .env.example) in the repo root. Example:
+
+## FastAPI & Streamlit wiring
+```
+API_BASE=http://api:8000
+CORS_ORIGINS=http://localhost:8501,http://localhost:8000
+```
+## MongoDB (Atlas example)
+```
+MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/?retryWrites=true&w=majority
+MONGO_DB=covid_annotations
+MONGO_COLLECTION=annotations
+```
+## Snowflake
+```
+SNOWFLAKE_ACCOUNT=xxxxxx-xxxxx       # use full account id if needed (e.g. ...eu-central-1)
+SNOWFLAKE_USER=...
+SNOWFLAKE_PASSWORD=...
+SNOWFLAKE_ROLE=ACCOUNTADMIN
+SNOWFLAKE_WAREHOUSE=...
+SNOWFLAKE_DATABASE=COVID_DB
+SNOWFLAKE_SCHEMA=PUBLIC
+```
+3) Build & run
+```
+docker compose up -d --build
+```
+FastAPI (backend): http://localhost:8000/docs
+Streamlit (frontend): http://localhost:8501
+
+## Logs / status
+```
+docker compose ps
+docker compose logs -f api
+docker compose logs -f dashboard
+```
+## Stop
+```
+docker compose down
+```
 
 
 

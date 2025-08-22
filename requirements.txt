@@ -31,7 +31,7 @@ dash-bootstrap-components==2.0.3
 debugpy==1.8.16
 decorator==5.2.1
 defusedxml==0.7.1
-dnspython==2.7.0
+pywin32==311; sys_platform == "win32"
 docopt==0.6.2
 executing==2.2.0
 fastapi==0.116.1
@@ -122,8 +122,8 @@ python-dotenv==1.1.1
 python-json-logger==3.3.0
 pytz==2025.2
 PyWavelets==1.9.0
-pywin32==311
-pywinpty==2.0.15
+pywin32==311; sys_platform == "win32"
+pywinpty==2.0.14; sys_platform == "win32"
 PyYAML==6.0.2
 pyzmq==27.0.1
 referencing==0.36.2
