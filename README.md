@@ -134,7 +134,8 @@ streamlit run app\dashboard\dashboard.py
 - If using MongoDB Atlas, add your machine’s IP to Network Access in Atlas.
 2) Environment
 
-Make a .env (or copy from .env.example) in the repo root. Example:
+Make a .env (or copy from .env.example) in the repo root. Just copy credentials from txt file provided
+Example:
 
 ## FastAPI & Streamlit wiring
 ```
@@ -174,6 +175,7 @@ docker compose logs -f dashboard
 ```
 docker compose down
 ```
+
 
 
 
