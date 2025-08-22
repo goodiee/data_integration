@@ -1,4 +1,4 @@
-# COVID-19 Dachboard (Streamlit + FastAPI + Snowflake + MongoDB)
+# COVID-19 Dashboard (Streamlit + FastAPI + Snowflake + MongoDB)
 
 Interactive Streamlit dashboard backed by a FastAPI service.
 Time-series metrics are read from Snowflake; user comments/annotations are stored in MongoDB.
@@ -52,7 +52,15 @@ Time-series metrics are read from Snowflake; user comments/annotations are store
 
 ## Setup 
 
+It is very important to have version of Python: 3.11.9!
+All following commands should be runnning in Command Prompt.
+
+```
+git clone https://github.com/goodiee/data_integration.git
+cd data_integration
+```
 ### create & activate venv
+in the directory of created environmnet runt he following commands:
 ```
 python -m venv .venv
 .venv\Scripts\activate.bat
@@ -64,6 +72,7 @@ pip install -r requirements.txt
 ```
 
 ### create .env from example and edit it
+Put the environmental variables from .env txt file into .env file of project.
 ```
 copy .env.example .env
 notepad .env
@@ -81,22 +90,49 @@ notepad .env
 ## Data preparation & utilities
 
 ```
-scripts/eda_process.py
+python scripts\eda_process.py
 ```
-
 - Shows how Snowflake tables are used with the COVID-19 dataset (load/transform/inspect).
 - Can generate per-country reports (details & plots) and save them under reports/
 
 ```
-scripts/test.py
+python scripts\test.py
 ```
-
 - Helps detect missed or unmapped countries (e.g., alias mismatches or data gaps).
 - Useful to understand which regions can’t be plotted/predicted due to missing series.
 
 ```
 notebooks/conversion.ipynb
 ```
-
 - Used to normalize the GDP PPP dataset into a clean long format (data/gdp_long.csv, data/gdp_ppp_long.csv).
-- Makes the GDP data readable and join-friendly with the COVID time series for comparisons/insights.
+- Makes the GDP data readable and join-friendly with the COVID time series for comparisons/insights. You can run just manually .ipynb file.
+
+ ## GDP dataset note
+
+This project also uses an additional GDP PPP dataset to compare macroeconomic context with COVID metrics.
+Some countries may be missing or have inconsistent naming; the alias map and scripts/test.py help identify and resolve those gaps.
+
+
+# Run the app (two terminals)
+run from the data_integration/ directory
+```
+python -m uvicorn app.api.main:app --reload --port 8000
+```
+```
+streamlit run app\dashboard\dashboard.py
+```
+
+### Open:
+
+- Dashboard → http://localhost:8501
+
+  <img width="1732" height="839" alt="image" src="https://github.com/user-attachments/assets/cd16f8b8-44ae-43c3-8c65-36b6494da90d" />
+
+
+
+
+
+
+
+
+
